@@ -25,7 +25,6 @@ def init_db():
         c.execute("""
             CREATE TABLE IF NOT EXISTS contents (
                 code TEXT PRIMARY KEY,
-                title TEXT,
                 content_type TEXT NOT NULL,
                 text_content TEXT,
                 file_id TEXT,
@@ -34,6 +33,7 @@ def init_db():
             )
         """)
         c.execute("ALTER TABLE contents ADD COLUMN IF NOT EXISTS title TEXT")
+        c.execute("ALTER TABLE contents ADD COLUMN IF NOT EXISTS required_invites INTEGER DEFAULT 0")
         c.execute("""
             CREATE TABLE IF NOT EXISTS reactions (
                 chat_id TEXT NOT NULL,
@@ -49,6 +49,15 @@ def init_db():
                 username TEXT,
                 invite_link TEXT,
                 added_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS invites (
+                code TEXT NOT NULL,
+                referrer_id TEXT NOT NULL,
+                referred_id TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (code, referred_id)
             )
         """)
     print("Database initialized!")

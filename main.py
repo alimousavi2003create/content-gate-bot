@@ -25,6 +25,8 @@ ADMIN_PANEL_PASSWORD = os.environ.get("ADMIN_PANEL_PASSWORD", "")
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24).hex()
 GROUP_GATE_CHAT_ID = os.environ.get("GROUP_GATE_CHAT_ID", "")
 GROUP_GATE_REQUIRED_CHATS = os.environ.get("GROUP_GATE_REQUIRED_CHATS", "")
+ADMIN_PANEL_URL = os.environ.get("ADMIN_PANEL_URL", "https://content-gate-bot-production.up.railway.app/admin")
+DEFAULT_GROUP_LINK = os.environ.get("DEFAULT_GROUP_LINK", "https://t.me/botgrups")
 
 flask_app = Flask(__name__)
 flask_app.secret_key = FLASK_SECRET_KEY
@@ -58,7 +60,15 @@ def build_join_keyboard(missing, code):
     buttons = []
     for title, link in missing:
         buttons.append([InlineKeyboardButton(f"\U0001F4E2 Join {title}", url=link)])
-    buttons.append([InlineKeyboardButton("\u2705 I joined - check again", callback_data=f"recheck:{code}")])
+    buttons.append([InlineKeyboardButton("\u2705 عضو شدم - چک کن", callback_data=f"recheck:{code}")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def build_invite_keyboard(code, share_link):
+    buttons = [
+        [InlineKeyboardButton("\U0001F4E4 اشتراک‌گذاری لینک دعوت", url=f"https://t.me/share/url?url={share_link}")],
+        [InlineKeyboardButton("\U0001F504 بررسی وضعیت", callback_data=f"invcheck:{code}")],
+    ]
     return InlineKeyboardMarkup(buttons)
 
 
@@ -103,47 +113,111 @@ async def deliver_content(bot, chat_id, content):
         logger.error(f"delivery failed: {e}")
 
 
-ADMIN_PANEL_URL = os.environ.get("ADMIN_PANEL_URL", "https://content-gate-bot-production.up.railway.app/admin")
-DEFAULT_GROUP_LINK = os.environ.get("DEFAULT_GROUP_LINK", "https://t.me/botgrups")
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not context.args:
-        if str(user_id) in ADMIN_IDS:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛠 باز کردن پنل ادمین", url=ADMIN_PANEL_URL)]])
-            await update.message.reply_text("سلام ادمین.", reply_markup=kb)
-        else:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 عضویت", url=DEFAULT_GROUP_LINK)]])
-            await update.message.reply_text("سلام! برای دریافت محتوا از یک لینک معتبر استفاده کن.", reply_markup=kb)
-        return
-
-    code = context.args[0].strip()
+def get_invite_count(code, referrer_id):
     with get_db_cursor() as c:
-        c.execute("SELECT * FROM contents WHERE code = %s", (code,))
-        content = c.fetchone()
+        c.execute("SELECT COUNT(*) AS cnt FROM invites WHERE code = %s AND referrer_id = %s", (code, str(referrer_id)))
+        return c.fetchone()["cnt"]
 
-    if not content:
-        await update.message.reply_text("این لینک نامعتبر یا منقضی شده.")
+
+async def record_invite_if_any(code, referrer_id, referred_id):
+    if not referrer_id or str(referrer_id) == str(referred_id):
         return
+    with get_db_cursor() as c:
+        c.execute("""
+            INSERT INTO invites (code, referrer_id, referred_id)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (code, referred_id) DO NOTHING
+        """, (code, str(referrer_id), str(referred_id)))
 
+
+async def run_gate_and_deliver(bot, code, content, user_id, chat_id, edit_func=None, reply_func=None):
     required_chats = [x for x in content["required_chats"].split(",") if x]
-    missing, config_errors = await resolve_missing(context.bot, required_chats, user_id)
+    missing, config_errors = await resolve_missing(bot, required_chats, user_id)
 
     if config_errors:
-        await update.message.reply_text("این لینک تنظیمات نادرست دارد. به ادمین اطلاع بده.")
+        text = "این لینک تنظیمات نادرست دارد. به ادمین اطلاع بده."
+        if edit_func:
+            await edit_func(text)
+        elif reply_func:
+            await reply_func(text)
         for admin_id in ADMIN_IDS:
             try:
-                await context.bot.send_message(chat_id=admin_id, text=f"محتوای '{code}' کانال نامعتبر دارد: {config_errors}")
+                await bot.send_message(chat_id=admin_id, text=f"محتوای '{code}' کانال نامعتبر دارد: {config_errors}")
             except Exception:
                 pass
         return
 
     if missing:
-        await update.message.reply_text("اول باید عضو این کانال‌ها بشی:", reply_markup=build_join_keyboard(missing, code))
+        kb = build_join_keyboard(missing, code)
+        if edit_func:
+            await edit_func("اول باید عضو این کانال‌ها بشی:", kb)
+        elif reply_func:
+            await reply_func("اول باید عضو این کانال‌ها بشی:", kb)
         return
 
-    await deliver_content(context.bot, update.effective_chat.id, content)
+    if edit_func:
+        await edit_func("همه چی اوکیه! در حال ارسال محتوا...")
+    await deliver_content(bot, chat_id, content)
+
+
+async def handle_content_flow(bot, code, user_id, chat_id, edit_func=None, reply_func=None):
+    with get_db_cursor() as c:
+        c.execute("SELECT * FROM contents WHERE code = %s", (code,))
+        content = c.fetchone()
+
+    if not content:
+        text = "این لینک نامعتبر یا منقضی شده."
+        if edit_func:
+            await edit_func(text)
+        elif reply_func:
+            await reply_func(text)
+        return
+
+    required_invites = content.get("required_invites") or 0
+    if required_invites > 0:
+        count = get_invite_count(code, user_id)
+        if count < required_invites:
+            share_link = f"https://t.me/{BOT_USERNAME}?start={code}_ref_{user_id}"
+            text = f"برای دریافت این محتوا باید {required_invites} نفر رو با لینک زیر دعوت کنی.\nتا الان: {count} از {required_invites}"
+            kb = build_invite_keyboard(code, share_link)
+            if edit_func:
+                await edit_func(text, kb)
+            elif reply_func:
+                await reply_func(text, kb)
+            return
+
+    await run_gate_and_deliver(bot, code, content, user_id, chat_id, edit_func=edit_func, reply_func=reply_func)
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+
+    if not context.args:
+        if str(user_id) in ADMIN_IDS:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("\U0001F6E0 باز کردن پنل ادمین", url=ADMIN_PANEL_URL)]])
+            await update.message.reply_text("سلام ادمین.", reply_markup=kb)
+        else:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("\U0001F517 عضویت", url=DEFAULT_GROUP_LINK)]])
+            await update.message.reply_text("سلام! برای دریافت محتوا از یک لینک معتبر استفاده کن.", reply_markup=kb)
+        return
+
+    token = context.args[0].strip()
+    code = token
+    if "_ref_" in token:
+        code, ref_part = token.rsplit("_ref_", 1)
+        if ref_part.isdigit():
+            await record_invite_if_any(code, ref_part, user_id)
+            try:
+                new_count = get_invite_count(code, ref_part)
+                await context.bot.send_message(chat_id=int(ref_part), text=f"یک نفر با لینک دعوتت وارد شد. پیشرفت: {new_count}")
+            except Exception:
+                pass
+
+    async def reply_func(text, kb=None):
+        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
+
+    await handle_content_flow(context.bot, code, user_id, chat_id, reply_func=reply_func)
 
 
 async def recheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -151,6 +225,7 @@ async def recheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     code = query.data.split(":", 1)[1]
     user_id = query.from_user.id
+    chat_id = query.message.chat_id
 
     with get_db_cursor() as c:
         c.execute("SELECT * FROM contents WHERE code = %s", (code,))
@@ -159,19 +234,23 @@ async def recheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("این لینک نامعتبر یا منقضی شده.")
         return
 
-    required_chats = [x for x in content["required_chats"].split(",") if x]
-    missing, config_errors = await resolve_missing(context.bot, required_chats, user_id)
+    async def edit_func(text, kb=None):
+        await query.edit_message_text(text, reply_markup=kb)
 
-    if config_errors:
-        await query.edit_message_text("این لینک تنظیمات نادرست دارد. به ادمین اطلاع بده.")
-        return
+    await run_gate_and_deliver(context.bot, code, content, user_id, chat_id, edit_func=edit_func)
 
-    if missing:
-        await query.edit_message_text("هنوز عضو این‌ها نیستی:", reply_markup=build_join_keyboard(missing, code))
-        return
 
-    await query.edit_message_text("همه چی اوکیه! در حال ارسال محتوا...")
-    await deliver_content(context.bot, query.message.chat_id, content)
+async def invcheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    code = query.data.split(":", 1)[1]
+    user_id = query.from_user.id
+    chat_id = query.message.chat_id
+
+    async def edit_func(text, kb=None):
+        await query.edit_message_text(text, reply_markup=kb)
+
+    await handle_content_flow(context.bot, code, user_id, chat_id, edit_func=edit_func)
 
 
 async def track_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -359,6 +438,10 @@ def api_contents():
         type_override = request.form.get("type_override") or ""
         channel_ids = request.form.getlist("channel_ids")
         code = (request.form.get("code") or "").strip() or uuid.uuid4().hex[:8]
+        try:
+            required_invites = int(request.form.get("required_invites") or 0)
+        except ValueError:
+            required_invites = 0
 
         if not channel_ids:
             return jsonify({"success": False, "error": "حداقل یک کانال انتخاب کن"}), 400
@@ -383,11 +466,11 @@ def api_contents():
 
         with get_db_cursor() as c:
             c.execute("""
-                INSERT INTO contents (code, title, content_type, text_content, file_id, required_chats)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (code) DO UPDATE SET title=%s, content_type=%s, text_content=%s, file_id=%s, required_chats=%s
-            """, (code, title, content_type, text_content, file_id, ",".join(channel_ids),
-                  title, content_type, text_content, file_id, ",".join(channel_ids)))
+                INSERT INTO contents (code, title, content_type, text_content, file_id, required_chats, required_invites)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (code) DO UPDATE SET title=%s, content_type=%s, text_content=%s, file_id=%s, required_chats=%s, required_invites=%s
+            """, (code, title, content_type, text_content, file_id, ",".join(channel_ids), required_invites,
+                  title, content_type, text_content, file_id, ",".join(channel_ids), required_invites))
 
         link = f"https://t.me/{BOT_USERNAME}?start={code}"
         return jsonify({"success": True, "code": code, "link": link})
@@ -415,6 +498,7 @@ async def _run_bot_async():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(recheck_callback, pattern="^recheck:"))
+    application.add_handler(CallbackQueryHandler(invcheck_callback, pattern="^invcheck:"))
     application.add_handler(MessageReactionHandler(track_reaction))
     application.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, group_gate))
     bot_app = application
