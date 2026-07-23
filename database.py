@@ -1,6 +1,6 @@
 import os
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 from contextlib import contextmanager
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -8,9 +8,9 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 @contextmanager
 def get_db_cursor():
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     try:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor()
         yield cur
         conn.commit()
     except Exception:
