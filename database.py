@@ -25,12 +25,11 @@ def init_db():
         c.execute("""
             CREATE TABLE IF NOT EXISTS contents (
                 code TEXT PRIMARY KEY,
+                title TEXT,
                 content_type TEXT NOT NULL,
                 text_content TEXT,
                 file_id TEXT,
                 required_chats TEXT NOT NULL,
-                reaction_chat_id TEXT,
-                reaction_message_id BIGINT,
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
@@ -43,12 +42,12 @@ def init_db():
             )
         """)
         c.execute("""
-            CREATE TABLE IF NOT EXISTS pending_uploads (
-                admin_id TEXT PRIMARY KEY,
-                code TEXT,
-                required_chats TEXT,
-                reaction_chat_id TEXT,
-                reaction_message_id BIGINT
+            CREATE TABLE IF NOT EXISTS channel_pool (
+                chat_id TEXT PRIMARY KEY,
+                title TEXT,
+                username TEXT,
+                invite_link TEXT,
+                added_at TIMESTAMP DEFAULT NOW()
             )
         """)
     print("Database initialized!")

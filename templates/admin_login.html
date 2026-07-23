@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>ورود ادمین</title>
+<style>
+body{font-family:Tahoma,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+.box{background:#1e293b;padding:30px;border-radius:12px;width:300px}
+input{width:100%;padding:10px;margin:10px 0;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#fff;box-sizing:border-box}
+button{width:100%;padding:10px;border:none;border-radius:6px;background:#2563eb;color:#fff;font-size:16px;cursor:pointer}
+.err{color:#f87171;font-size:14px}
+h2{text-align:center}
+</style>
+</head>
+<body>
+<div class="box">
+<h2>پنل ادمین</h2>
+{% if error %}<p class="err">{{ error }}</p>{% endif %}
+<form method="POST">
+<input type="password" name="password" placeholder="رمز عبور" required autofocus>
+<button type="submit">ورود</button>
+</form>
+</div>
+</body>
+</html>

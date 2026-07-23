@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>پنل ادمین</title>
+<style>
+body{font-family:Tahoma,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:16px}
+h1{font-size:20px}
+.tabs{display:flex;gap:8px;margin-bottom:16px}
+.tab{padding:8px 16px;background:#1e293b;border-radius:8px;cursor:pointer}
+.tab.active{background:#2563eb}
+.panel{display:none}
+.panel.active{display:block}
+input,textarea,select{width:100%;padding:8px;margin:6px 0;border-radius:6px;border:1px solid #334155;background:#1e293b;color:#fff;box-sizing:border-box}
+button{padding:8px 14px;border:none;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer;margin-top:6px}
+.card{background:#1e293b;padding:12px;border-radius:8px;margin-bottom:10px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.del{background:#dc2626}
+.checkbox-list{max-height:180px;overflow-y:auto;background:#0f172a;padding:8px;border-radius:6px}
+.checkbox-list label{display:block;padding:4px 0}
+.msg{font-size:14px;margin:6px 0}
+.msg.ok{color:#4ade80}
+.msg.err{color:#f87171}
+a{color:#60a5fa}
+.logout{float:left}
+</style>
+</head>
+<body>
+<div class="row"><h1>پنل ادمین</h1><a class="logout" href="/admin/logout">خروج</a></div>
+
+<div class="tabs">
+<div class="tab active" data-tab="channels">کانال‌های اجباری</div>
+<div class="tab" data-tab="contents">محتواها</div>
+</div>
+
+<div id="channels" class="panel active">
+<div class="card">
+<h3>افزودن کانال</h3>
+<input id="ch-identifier" placeholder="@username یا chat_id عددی (-100...)">
+<button onclick="addChannel()">افزودن</button>
+<p id="ch-msg" class="msg"></p>
+<p style="font-size:13px;color:#94a3b8">بات باید از قبل عضو کانال باشه، وگرنه پیدا نمی‌کنه.</p>
+</div>
+<div id="channel-list"></div>
+</div>
+
+<div id="contents" class="panel">
+<div class="card">
+<h3>ساخت محتوای جدید</h3>
+<input id="c-title" placeholder="عنوان (فقط برای خودت)">
+<select id="c-type">
+<option value="">تشخیص خودکار از فایل</option>
+<option value="photo">عکس</option>
+<option value="video">ویدیو</option>
+<option value="animation">گیف</option>
+<option value="audio">آهنگ</option>
+<option value="sticker">استیکر</option>
+<option value="document">سند</option>
+</select>
+<input id="c-file" type="file">
+<textarea id="c-text" placeholder="متن (اگه فایل نمی‌فرستی، یا کپشن فایل)" rows="3"></textarea>
+<div class="checkbox-list" id="c-channels"></div>
+<button onclick="createContent()">ساخت لینک</button>
+<p id="c-msg" class="msg"></p>
+</div>
+<div id="content-list"></div>
+</div>
+
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
+  t.classList.add('active');
+  document.getElementById(t.dataset.tab).classList.add('active');
+  if(t.dataset.tab==='contents') loadChannelCheckboxes();
+}));
+
+async function loadChannels(){
+  const r = await fetch('/admin/api/channels');
+  const d = await r.json();
+  const box = document.getElementById('channel-list');
+  box.innerHTML = '';
+  (d.channels||[]).forEach(ch=>{
+    const div = document.createElement('div');
+    div.className='card row';
+    div.innerHTML = `<span>${ch.title}<br><small style="color:#94a3b8">${ch.chat_id}</small></span><button class="del" onclick="delChannel('${ch.chat_id}')">حذف</button>`;
+    box.appendChild(div);
+  });
+}
+
+async function addChannel(){
+  const identifier = document.getElementById('ch-identifier').value.trim();
+  const msg = document.getElementById('ch-msg');
+  msg.textContent = 'در حال بررسی...'; msg.className='msg';
+  const r = await fetch('/admin/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({identifier})});
+  const d = await r.json();
+  if(d.success){ msg.textContent='اضافه شد: '+d.channel.title; msg.className='msg ok'; document.getElementById('ch-identifier').value=''; loadChannels(); }
+  else { msg.textContent = d.error; msg.className='msg err'; }
+}
+
+async function delChannel(chatId){
+  if(!confirm('حذف بشه؟')) return;
+  await fetch('/admin/api/channels/'+encodeURIComponent(chatId),{method:'DELETE'});
+  loadChannels();
+}
+
+async function loadChannelCheckboxes(){
+  const r = await fetch('/admin/api/channels');
+  const d = await r.json();
+  const box = document.getElementById('c-channels');
+  box.innerHTML = '';
+  (d.channels||[]).forEach(ch=>{
+    const label = document.createElement('label');
+    label.innerHTML = `<input type="checkbox" value="${ch.chat_id}"> ${ch.title}`;
+    box.appendChild(label);
+  });
+}
+
+async function createContent(){
+  const msg = document.getElementById('c-msg');
+  const fd = new FormData();
+  fd.append('title', document.getElementById('c-title').value);
+  fd.append('type_override', document.getElementById('c-type').value);
+  fd.append('caption', document.getElementById('c-text').value);
+  fd.append('text_body', document.getElementById('c-text').value);
+  const file = document.getElementById('c-file').files[0];
+  if(file) fd.append('file', file);
+  document.querySelectorAll('#c-channels input:checked').forEach(cb=>fd.append('channel_ids', cb.value));
+  msg.textContent='در حال ساخت و آپلود...'; msg.className='msg';
+  const r = await fetch('/admin/api/contents',{method:'POST',body:fd});
+  const d = await r.json();
+  if(d.success){ msg.textContent='ساخته شد: '+d.link; msg.className='msg ok'; loadContents(); }
+  else { msg.textContent = d.error; msg.className='msg err'; }
+}
+
+async function loadContents(){
+  const r = await fetch('/admin/api/contents');
+  const d = await r.json();
+  const box = document.getElementById('content-list');
+  box.innerHTML = '';
+  (d.contents||[]).forEach(ct=>{
+    const div = document.createElement('div');
+    div.className='card';
+    div.innerHTML = `<div class="row"><b>${ct.title || ct.code}</b><button class="del" onclick="delContent('${ct.code}')">حذف</button></div>
+      <div style="font-size:13px;color:#94a3b8">نوع: ${ct.content_type}</div>
+      <div><a href="${ct.link}" target="_blank">${ct.link}</a> <button onclick="navigator.clipboard.writeText('${ct.link}')">کپی</button></div>`;
+    box.appendChild(div);
+  });
+}
+
+async function delContent(code){
+  if(!confirm('حذف بشه؟')) return;
+  await fetch('/admin/api/contents/'+encodeURIComponent(code),{method:'DELETE'});
+  loadContents();
+}
+
+loadChannels();
+loadContents();
+</script>
+</body>
+</html>
