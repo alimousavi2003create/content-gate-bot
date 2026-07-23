@@ -278,6 +278,21 @@ async def group_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
 
+async def report_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if not chat or chat.type == "private":
+        return
+    title = chat.title or chat.id
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=f"Chat ID discovered:\n{title}\n{chat.id}"
+            )
+        except Exception:
+            pass
+
+
 def main():
     if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN environment variable is not set")
@@ -293,6 +308,7 @@ def main():
         capture_pending_content
     ))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, group_gate))
+    app.add_handler(MessageHandler(filters.ALL, report_chat_id))
 
     logger.info("Content gate bot started!")
     app.run_polling(drop_pending_updates=True, allowed_updates=["message", "callback_query", "message_reaction"])
