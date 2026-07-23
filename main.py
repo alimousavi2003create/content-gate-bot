@@ -82,19 +82,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     required_chats = [x for x in content["required_chats"].split(",") if x]
     missing = []
+    config_errors = []
     for chat_id in required_chats:
         ok = await check_membership(context.bot, chat_id, user_id)
         if not ok:
             try:
                 chat = await context.bot.get_chat(chat_id)
                 title = chat.title or chat_id
-                link = chat.invite_link or f"https://t.me/{chat.username}" if chat.username else None
+                link = chat.invite_link or (f"https://t.me/{chat.username}" if chat.username else None)
                 if not link:
                     link = await context.bot.export_chat_invite_link(chat_id)
-            except Exception:
-                title, link = chat_id, None
-            if link:
                 missing.append((title, link))
+            except Exception as e:
+                logger.error(f"could not resolve chat {chat_id}: {e}")
+                config_errors.append(chat_id)
 
     if content["reaction_chat_id"] and content["reaction_message_id"]:
         reacted = await check_reaction(content["reaction_chat_id"], content["reaction_message_id"], user_id)
@@ -104,8 +105,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 title = f"{chat.title} (react to the latest post)"
                 link = chat.invite_link or await context.bot.export_chat_invite_link(content["reaction_chat_id"])
                 missing.append((title, link))
+            except Exception as e:
+                logger.error(f"could not resolve reaction chat: {e}")
+                config_errors.append(content["reaction_chat_id"])
+
+    if config_errors:
+        await update.message.reply_text(
+            "This link is misconfigured (invalid channel/group ID). Please tell the admin."
+        )
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"Content '{code}' has invalid chat IDs: {config_errors}"
+                )
             except Exception:
                 pass
+        return
 
     if missing:
         await update.message.reply_text(
@@ -132,6 +148,7 @@ async def recheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     required_chats = [x for x in content["required_chats"].split(",") if x]
     missing = []
+    config_errors = []
     for chat_id in required_chats:
         ok = await check_membership(context.bot, chat_id, user_id)
         if not ok:
@@ -139,10 +156,10 @@ async def recheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat = await context.bot.get_chat(chat_id)
                 title = chat.title or chat_id
                 link = chat.invite_link or await context.bot.export_chat_invite_link(chat_id)
-            except Exception:
-                title, link = chat_id, None
-            if link:
                 missing.append((title, link))
+            except Exception as e:
+                logger.error(f"could not resolve chat {chat_id}: {e}")
+                config_errors.append(chat_id)
 
     if content["reaction_chat_id"] and content["reaction_message_id"]:
         reacted = await check_reaction(content["reaction_chat_id"], content["reaction_message_id"], user_id)
@@ -152,8 +169,13 @@ async def recheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 title = f"{chat.title} (react to the latest post)"
                 link = chat.invite_link or await context.bot.export_chat_invite_link(content["reaction_chat_id"])
                 missing.append((title, link))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"could not resolve reaction chat: {e}")
+                config_errors.append(content["reaction_chat_id"])
+
+    if config_errors:
+        await query.edit_message_text("This link is misconfigured (invalid channel/group ID). Please tell the admin.")
+        return
 
     if missing:
         await query.edit_message_text(
