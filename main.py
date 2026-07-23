@@ -103,10 +103,19 @@ async def deliver_content(bot, chat_id, content):
         logger.error(f"delivery failed: {e}")
 
 
+ADMIN_PANEL_URL = os.environ.get("ADMIN_PANEL_URL", "https://content-gate-bot-production.up.railway.app/admin")
+DEFAULT_GROUP_LINK = os.environ.get("DEFAULT_GROUP_LINK", "https://t.me/botgrups")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not context.args:
-        await update.message.reply_text("سلام! برای دریافت محتوا از یک لینک معتبر استفاده کن.")
+        if str(user_id) in ADMIN_IDS:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛠 باز کردن پنل ادمین", url=ADMIN_PANEL_URL)]])
+            await update.message.reply_text("سلام ادمین.", reply_markup=kb)
+        else:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 عضویت", url=DEFAULT_GROUP_LINK)]])
+            await update.message.reply_text("سلام! برای دریافت محتوا از یک لینک معتبر استفاده کن.", reply_markup=kb)
         return
 
     code = context.args[0].strip()
