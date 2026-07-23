@@ -33,6 +33,7 @@ def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        c.execute("ALTER TABLE contents ADD COLUMN IF NOT EXISTS title TEXT")
         c.execute("""
             CREATE TABLE IF NOT EXISTS reactions (
                 chat_id TEXT NOT NULL,
