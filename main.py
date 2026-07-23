@@ -86,19 +86,19 @@ async def deliver_content(bot, chat_id, content):
     caption = content["text_content"] or ""
     try:
         if ctype == "text":
-            await bot.send_message(chat_id=chat_id, text=content["text_content"] or "")
+            await bot.send_message(chat_id=chat_id, text=content["text_content"] or "", protect_content=True)
         elif ctype == "photo":
-            await bot.send_photo(chat_id=chat_id, photo=content["file_id"], caption=caption)
+            await bot.send_photo(chat_id=chat_id, photo=content["file_id"], caption=caption, protect_content=True)
         elif ctype == "video":
-            await bot.send_video(chat_id=chat_id, video=content["file_id"], caption=caption)
+            await bot.send_video(chat_id=chat_id, video=content["file_id"], caption=caption, protect_content=True)
         elif ctype == "animation":
-            await bot.send_animation(chat_id=chat_id, animation=content["file_id"], caption=caption)
+            await bot.send_animation(chat_id=chat_id, animation=content["file_id"], caption=caption, protect_content=True)
         elif ctype == "audio":
-            await bot.send_audio(chat_id=chat_id, audio=content["file_id"], caption=caption)
+            await bot.send_audio(chat_id=chat_id, audio=content["file_id"], caption=caption, protect_content=True)
         elif ctype == "sticker":
-            await bot.send_sticker(chat_id=chat_id, sticker=content["file_id"])
+            await bot.send_sticker(chat_id=chat_id, sticker=content["file_id"], protect_content=True)
         elif ctype == "document":
-            await bot.send_document(chat_id=chat_id, document=content["file_id"], caption=caption)
+            await bot.send_document(chat_id=chat_id, document=content["file_id"], caption=caption, protect_content=True)
     except Exception as e:
         logger.error(f"delivery failed: {e}")
 
