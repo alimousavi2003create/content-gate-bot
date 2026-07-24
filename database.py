@@ -52,6 +52,16 @@ def init_db():
             )
         """)
         c.execute("""
+            CREATE TABLE IF NOT EXISTS invite_links (
+                code TEXT NOT NULL,
+                referrer_id TEXT NOT NULL,
+                invite_link TEXT NOT NULL,
+                link_name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (code, referrer_id)
+            )
+        """)
+        c.execute("""
             CREATE TABLE IF NOT EXISTS invites (
                 code TEXT NOT NULL,
                 referrer_id TEXT NOT NULL,

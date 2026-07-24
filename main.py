@@ -11,7 +11,7 @@ from flask import Flask, request, jsonify, session, redirect, url_for, render_te
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
-    MessageReactionHandler, filters, ContextTypes,
+    MessageReactionHandler, ChatMemberHandler, filters, ContextTypes,
 )
 
 from database import init_db, get_db_cursor
@@ -27,6 +27,7 @@ GROUP_GATE_CHAT_ID = os.environ.get("GROUP_GATE_CHAT_ID", "")
 GROUP_GATE_REQUIRED_CHATS = os.environ.get("GROUP_GATE_REQUIRED_CHATS", "")
 ADMIN_PANEL_URL = os.environ.get("ADMIN_PANEL_URL", "https://content-gate-bot-production.up.railway.app/admin")
 DEFAULT_GROUP_LINK = os.environ.get("DEFAULT_GROUP_LINK", "https://t.me/botgrups")
+INVITE_TARGET_CHAT = os.environ.get("INVITE_TARGET_CHAT", "@botgrups")
 
 flask_app = Flask(__name__)
 flask_app.secret_key = FLASK_SECRET_KEY
@@ -36,6 +37,7 @@ bot_app = None
 bot_loop = None
 bot_ready_event = threading.Event()
 BOT_USERNAME = None
+INVITE_TARGET_CHAT_RESOLVED_ID = None
 
 
 def run_bot_coro(coro, timeout=30):
@@ -64,9 +66,9 @@ def build_join_keyboard(missing, code):
     return InlineKeyboardMarkup(buttons)
 
 
-def build_invite_keyboard(code, share_link):
+def build_invite_keyboard(code, group_link):
     buttons = [
-        [InlineKeyboardButton("\U0001F4E4 اشتراک‌گذاری لینک دعوت", url=f"https://t.me/share/url?url={share_link}")],
+        [InlineKeyboardButton("\U0001F4E4 اشتراک‌گذاری لینک گروه", url=f"https://t.me/share/url?url={group_link}")],
         [InlineKeyboardButton("\U0001F504 بررسی وضعیت", callback_data=f"invcheck:{code}")],
     ]
     return InlineKeyboardMarkup(buttons)
@@ -130,6 +132,23 @@ async def record_invite_if_any(code, referrer_id, referred_id):
         """, (code, str(referrer_id), str(referred_id)))
 
 
+async def get_or_create_invite_link(bot, code, referrer_id):
+    with get_db_cursor() as c:
+        c.execute("SELECT invite_link FROM invite_links WHERE code = %s AND referrer_id = %s", (code, str(referrer_id)))
+        row = c.fetchone()
+    if row:
+        return row["invite_link"]
+    link_name = f"{code}:{referrer_id}"[:32]
+    invite = await bot.create_chat_invite_link(chat_id=INVITE_TARGET_CHAT, name=link_name)
+    with get_db_cursor() as c:
+        c.execute("""
+            INSERT INTO invite_links (code, referrer_id, invite_link, link_name)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (code, referrer_id) DO UPDATE SET invite_link=%s, link_name=%s
+        """, (code, str(referrer_id), invite.invite_link, link_name, invite.invite_link, link_name))
+    return invite.invite_link
+
+
 async def run_gate_and_deliver(bot, code, content, user_id, chat_id, edit_func=None, reply_func=None):
     required_chats = [x for x in content["required_chats"].split(",") if x]
     missing, config_errors = await resolve_missing(bot, required_chats, user_id)
@@ -177,9 +196,19 @@ async def handle_content_flow(bot, code, user_id, chat_id, edit_func=None, reply
     if required_invites > 0:
         count = get_invite_count(code, user_id)
         if count < required_invites:
-            share_link = f"https://t.me/{BOT_USERNAME}?start={code}_ref_{user_id}"
-            text = f"برای دریافت این محتوا باید {required_invites} نفر رو با لینک زیر دعوت کنی.\nتا الان: {count} از {required_invites}"
-            kb = build_invite_keyboard(code, share_link)
+            try:
+                invite_link = await get_or_create_invite_link(bot, code, user_id)
+            except Exception as e:
+                logger.error(f"could not create invite link: {e}")
+                text = "خطا در ساخت لینک دعوت. باید بات ادمین گروه با دسترسی «دعوت کاربر با لینک» باشه."
+                if edit_func:
+                    await edit_func(text)
+                elif reply_func:
+                    await reply_func(text)
+                return
+            text = (f"برای دریافت این محتوا باید {required_invites} نفر رو با لینک زیر وارد گروه کنی.\n"
+                     f"تا الان: {count} از {required_invites}\n\n{invite_link}")
+            kb = build_invite_keyboard(code, invite_link)
             if edit_func:
                 await edit_func(text, kb)
             elif reply_func:
@@ -202,17 +231,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("سلام! برای دریافت محتوا از یک لینک معتبر استفاده کن.", reply_markup=kb)
         return
 
-    token = context.args[0].strip()
-    code = token
-    if "_ref_" in token:
-        code, ref_part = token.rsplit("_ref_", 1)
-        if ref_part.isdigit():
-            await record_invite_if_any(code, ref_part, user_id)
-            try:
-                new_count = get_invite_count(code, ref_part)
-                await context.bot.send_message(chat_id=int(ref_part), text=f"یک نفر با لینک دعوتت وارد شد. پیشرفت: {new_count}")
-            except Exception:
-                pass
+    code = context.args[0].strip()
 
     async def reply_func(text, kb=None):
         await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
@@ -251,6 +270,31 @@ async def invcheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=kb)
 
     await handle_content_flow(context.bot, code, user_id, chat_id, edit_func=edit_func)
+
+
+async def track_group_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cm = update.chat_member
+    if not cm:
+        return
+    if INVITE_TARGET_CHAT_RESOLVED_ID is not None and cm.chat.id != INVITE_TARGET_CHAT_RESOLVED_ID:
+        return
+    old_status = cm.old_chat_member.status
+    new_status = cm.new_chat_member.status
+    if new_status != "member" or old_status in ("member", "administrator", "creator"):
+        return
+    invite_link = cm.invite_link
+    if not invite_link or not invite_link.name or ":" not in invite_link.name:
+        return
+    code, referrer_id = invite_link.name.split(":", 1)
+    referred_id = cm.new_chat_member.user.id
+    if str(referred_id) == str(referrer_id):
+        return
+    await record_invite_if_any(code, referrer_id, referred_id)
+    try:
+        new_count = get_invite_count(code, referrer_id)
+        await context.bot.send_message(chat_id=int(referrer_id), text=f"یک نفر با لینک دعوتت وارد گروه شد. پیشرفت: {new_count}")
+    except Exception:
+        pass
 
 
 async def track_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -494,20 +538,32 @@ def api_content_delete(code):
 # ---------- bot thread bootstrap ----------
 
 async def _run_bot_async():
-    global bot_app, bot_loop, BOT_USERNAME
+    global bot_app, bot_loop, BOT_USERNAME, INVITE_TARGET_CHAT_RESOLVED_ID
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(recheck_callback, pattern="^recheck:"))
     application.add_handler(CallbackQueryHandler(invcheck_callback, pattern="^invcheck:"))
     application.add_handler(MessageReactionHandler(track_reaction))
+    application.add_handler(ChatMemberHandler(track_group_join, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, group_gate))
     bot_app = application
 
     await application.initialize()
     me = await application.bot.get_me()
     BOT_USERNAME = me.username
+
+    try:
+        target_chat = await application.bot.get_chat(INVITE_TARGET_CHAT)
+        INVITE_TARGET_CHAT_RESOLVED_ID = target_chat.id
+        logger.info(f"invite target chat resolved: {INVITE_TARGET_CHAT} -> {target_chat.id}")
+    except Exception as e:
+        logger.error(f"could not resolve INVITE_TARGET_CHAT {INVITE_TARGET_CHAT}: {e}")
+
     await application.start()
-    await application.updater.start_polling(drop_pending_updates=True, allowed_updates=["message", "callback_query", "message_reaction"])
+    await application.updater.start_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query", "message_reaction", "chat_member"],
+    )
 
     bot_loop = asyncio.get_running_loop()
     bot_ready_event.set()
