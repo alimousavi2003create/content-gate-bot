@@ -118,20 +118,6 @@ async function loadChannelCheckboxes(){
   });
 }
 
-async function submitOneContent(title, typeOverride, caption, invites, channelIds, file){
-  const fd = new FormData();
-  fd.append('title', title);
-  fd.append('type_override', typeOverride);
-  fd.append('caption', caption);
-  fd.append('text_body', caption);
-  fd.append('required_invites', invites);
-  fd.append('required_reaction_chat', document.getElementById('c-reaction-chat').value.trim());
-  channelIds.forEach(id => fd.append('channel_ids', id));
-  if(file) fd.append('file', file);
-  const r = await fetch('/admin/api/contents',{method:'POST',body:fd});
-  return await r.json();
-}
-
 async function createContent(){
   const msg = document.getElementById('c-msg');
   const files = document.getElementById('c-file').files;
@@ -139,6 +125,7 @@ async function createContent(){
   const typeOverride = document.getElementById('c-type').value;
   const caption = document.getElementById('c-text').value;
   const invites = document.getElementById('c-invites').value || '0';
+  const reactionChat = document.getElementById('c-reaction-chat').value.trim();
   const channelIds = Array.from(document.querySelectorAll('#c-channels input:checked')).map(cb => cb.value);
 
   if(channelIds.length === 0){
@@ -146,54 +133,36 @@ async function createContent(){
     return;
   }
 
-  const results = [];
-  if(files.length > 0){
-    for(let i = 0; i < files.length; i++){
-      msg.textContent = `در حال آپلود ${i+1} از ${files.length}...`; msg.className = 'msg';
-      const d = await submitOneContent(title, typeOverride, caption, invites, channelIds, files[i]);
-      results.push(d);
-    }
-  } else {
-    msg.textContent = 'در حال ساخت...'; msg.className = 'msg';
-    const d = await submitOneContent(title, typeOverride, caption, invites, channelIds, null);
-    results.push(d);
+  const fd = new FormData();
+  fd.append('title', title);
+  fd.append('type_override', typeOverride);
+  fd.append('caption', caption);
+  fd.append('text_body', caption);
+  fd.append('required_invites', invites);
+  fd.append('required_reaction_chat', reactionChat);
+  channelIds.forEach(id => fd.append('channel_ids', id));
+  for(let i = 0; i < files.length; i++){
+    fd.append('files', files[i]);
   }
 
-  const okCount = results.filter(d => d.success).length;
-  const failCount = results.length - okCount;
-  if(failCount === 0){
-    msg.textContent = `✅ ${okCount} محتوا ساخته شد.`; msg.className = 'msg ok';
-  } else {
-    const errs = results.filter(d => !d.success).map(d => d.error).join(' | ');
-    msg.textContent = `${okCount} موفق، ${failCount} ناموفق: ${errs}`; msg.className = 'msg err';
-  }
-  document.getElementById('c-file').value = '';
-  loadContents();
-}
+  msg.textContent = files.length > 1 ? `در حال آپلود ${files.length} فایل به‌عنوان یک آلبوم...` : 'در حال ساخت...';
+  msg.className = 'msg';
 
-async function loadContents(){
-  const r = await fetch('/admin/api/contents');
+  const r = await fetch('/admin/api/contents',{method:'POST',body:fd});
   const d = await r.json();
-  const box = document.getElementById('content-list');
-  box.innerHTML = '';
-  (d.contents||[]).forEach(ct=>{
-    const div = document.createElement('div');
-    div.className='card';
-    div.innerHTML = `<div class="row"><b>${ct.title || ct.code}</b><button class="del" onclick="delContent('${ct.code}')">حذف</button></div>
-      <div style="font-size:13px;color:#94a3b8">نوع: ${ct.content_type}</div>
-      <div><a href="${ct.link}" target="_blank">${ct.link}</a> <button onclick="navigator.clipboard.writeText('${ct.link}')">کپی</button></div>`;
-    box.appendChild(div);
-  });
+
+  if(d.success){
+    const label = d.item_count ? `آلبوم با ${d.item_count} فایل` : 'محتوا';
+    msg.textContent = `\u2705 ${label} ساخته شد: ${d.link}`;
+    msg.className = 'msg ok';
+    document.getElementById('c-file').value = '';
+    loadContents();
+  } else {
+    msg.textContent = d.error;
+    msg.className = 'msg err';
+  }
 }
 
-async function delContent(code){
-  if(!confirm('حذف بشه؟')) return;
-  await fetch('/admin/api/contents/'+encodeURIComponent(code),{method:'DELETE'});
-  loadContents();
-}
-
-loadChannels();
-loadContents();
 </script>
 </body>
 </html>

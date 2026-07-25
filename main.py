@@ -9,7 +9,10 @@ from urllib.parse import quote as urlquote
 
 from flask import Flask, request, jsonify, session, redirect, url_for, render_template
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    InputMediaPhoto, InputMediaVideo,
+)
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     MessageReactionHandler, ChatMemberHandler, ChatJoinRequestHandler, filters, ContextTypes,
@@ -29,10 +32,11 @@ GROUP_GATE_REQUIRED_CHATS = os.environ.get("GROUP_GATE_REQUIRED_CHATS", "")
 ADMIN_PANEL_URL = os.environ.get("ADMIN_PANEL_URL", "https://content-gate-bot-production.up.railway.app/admin")
 DEFAULT_GROUP_LINK = os.environ.get("DEFAULT_GROUP_LINK", "https://t.me/botgrups")
 INVITE_TARGET_CHAT = os.environ.get("INVITE_TARGET_CHAT", "@botgrups")
+AUTO_DELETE_SECONDS = int(os.environ.get("AUTO_DELETE_SECONDS", "30"))
 
 flask_app = Flask(__name__)
 flask_app.secret_key = FLASK_SECRET_KEY
-flask_app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+flask_app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 
 bot_app = None
 bot_loop = None
@@ -41,7 +45,7 @@ BOT_USERNAME = None
 INVITE_TARGET_CHAT_RESOLVED_ID = None
 
 
-def run_bot_coro(coro, timeout=30):
+def run_bot_coro(coro, timeout=60):
     if bot_loop is None:
         raise RuntimeError("bot loop not ready")
     future = asyncio.run_coroutine_threadsafe(coro, bot_loop)
@@ -95,9 +99,6 @@ async def resolve_missing(bot, required_chats, user_id):
     return missing, config_errors
 
 
-AUTO_DELETE_SECONDS = int(os.environ.get("AUTO_DELETE_SECONDS", "30"))
-
-
 async def _delete_after_delay(bot, chat_id, message_id, delay):
     await asyncio.sleep(delay)
     try:
@@ -106,37 +107,88 @@ async def _delete_after_delay(bot, chat_id, message_id, delay):
         pass
 
 
+async def _send_single_item(bot, chat_id, item_type, file_id, caption):
+    if item_type == "photo":
+        return await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption or None)
+    elif item_type == "video":
+        return await bot.send_video(chat_id=chat_id, video=file_id, caption=caption or None)
+    elif item_type == "animation":
+        return await bot.send_animation(chat_id=chat_id, animation=file_id, caption=caption or None)
+    elif item_type == "audio":
+        return await bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption or None)
+    elif item_type == "sticker":
+        return await bot.send_sticker(chat_id=chat_id, sticker=file_id)
+    elif item_type == "document":
+        return await bot.send_document(chat_id=chat_id, document=file_id, caption=caption or None)
+    return None
+
+
 async def deliver_content(bot, chat_id, content):
     ctype = content["content_type"]
     caption = content["text_content"] or ""
-    sent_msg = None
-    try:
-        if ctype == "text":
-            sent_msg = await bot.send_message(chat_id=chat_id, text=content["text_content"] or "")
-        elif ctype == "photo":
-            sent_msg = await bot.send_photo(chat_id=chat_id, photo=content["file_id"], caption=caption)
-        elif ctype == "video":
-            sent_msg = await bot.send_video(chat_id=chat_id, video=content["file_id"], caption=caption)
-        elif ctype == "animation":
-            sent_msg = await bot.send_animation(chat_id=chat_id, animation=content["file_id"], caption=caption)
-        elif ctype == "audio":
-            sent_msg = await bot.send_audio(chat_id=chat_id, audio=content["file_id"], caption=caption)
-        elif ctype == "sticker":
-            sent_msg = await bot.send_sticker(chat_id=chat_id, sticker=content["file_id"])
-        elif ctype == "document":
-            sent_msg = await bot.send_document(chat_id=chat_id, document=content["file_id"], caption=caption)
-    except Exception as e:
-        logger.error(f"delivery failed: {e}")
-        return
+    sent_messages = []
 
-    if sent_msg is not None:
+    if ctype == "album":
+        with get_db_cursor() as c:
+            c.execute("SELECT position, item_type, file_id FROM content_items WHERE code = %s ORDER BY position ASC", (content["code"],))
+            items = c.fetchall()
+
+        if not items:
+            logger.error(f"album content {content['code']} has no items")
+            return
+
+        media_types = {it["item_type"] for it in items}
+        can_group = media_types.issubset({"photo", "video"}) and len(items) >= 2
+
+        if can_group:
+            media_list = []
+            for i, it in enumerate(items):
+                cap = caption if i == 0 else None
+                if it["item_type"] == "photo":
+                    media_list.append(InputMediaPhoto(media=it["file_id"], caption=cap))
+                else:
+                    media_list.append(InputMediaVideo(media=it["file_id"], caption=cap))
+            try:
+                sent_messages = await bot.send_media_group(chat_id=chat_id, media=media_list)
+            except Exception as e:
+                logger.error(f"album delivery (media_group) failed: {e}")
+                return
+        else:
+            for i, it in enumerate(items):
+                cap = caption if i == 0 else None
+                try:
+                    msg = await _send_single_item(bot, chat_id, it["item_type"], it["file_id"], cap)
+                    if msg is not None:
+                        sent_messages.append(msg)
+                except Exception as e:
+                    logger.error(f"album item delivery failed: {e}")
+                await asyncio.sleep(0.3)
+    else:
         try:
-            notice = await bot.send_message(chat_id=chat_id, text=f"\u23F1 این پیام تا {AUTO_DELETE_SECONDS} ثانیه دیگه خودکار پاک میشه.")
+            msg = await _send_single_item(bot, chat_id, ctype, content["file_id"], caption) if ctype != "text" else None
+            if ctype == "text":
+                msg = await bot.send_message(chat_id=chat_id, text=content["text_content"] or "")
+            if msg is not None:
+                sent_messages.append(msg)
+        except Exception as e:
+            logger.error(f"delivery failed: {e}")
+            return
+
+    if sent_messages:
+        try:
+            notice = await bot.send_message(chat_id=chat_id, text=f"\u23F1 این پیام(ها) تا {AUTO_DELETE_SECONDS} ثانیه دیگه خودکار پاک میشن.")
         except Exception:
             notice = None
-        asyncio.create_task(_delete_after_delay(bot, chat_id, sent_msg.message_id, AUTO_DELETE_SECONDS))
+        for msg in sent_messages:
+            asyncio.create_task(_delete_after_delay(bot, chat_id, msg.message_id, AUTO_DELETE_SECONDS))
         if notice is not None:
             asyncio.create_task(_delete_after_delay(bot, chat_id, notice.message_id, AUTO_DELETE_SECONDS))
+
+
+def get_invite_count(code, referrer_id):
+    with get_db_cursor() as c:
+        c.execute("SELECT COUNT(*) AS cnt FROM invites WHERE code = %s AND referrer_id = %s", (code, str(referrer_id)))
+        return c.fetchone()["cnt"]
 
 
 def get_latest_post(chat_id):
@@ -167,12 +219,6 @@ async def track_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE)
         """, (str(post.chat_id), post.message_id, post.message_id))
 
 
-def get_invite_count(code, referrer_id):
-    with get_db_cursor() as c:
-        c.execute("SELECT COUNT(*) AS cnt FROM invites WHERE code = %s AND referrer_id = %s", (code, str(referrer_id)))
-        return c.fetchone()["cnt"]
-
-
 async def record_invite_if_any(code, referrer_id, referred_id):
     if not referrer_id or str(referrer_id) == str(referred_id):
         return
@@ -191,7 +237,7 @@ async def get_or_create_invite_link(bot, code, referrer_id):
     if row:
         return row["invite_link"]
     link_name = f"{code}:{referrer_id}"[:32]
-    invite = await bot.create_chat_invite_link(chat_id=INVITE_TARGET_CHAT, name=link_name)
+    invite = await bot.create_chat_invite_link(chat_id=INVITE_TARGET_CHAT, name=link_name, creates_join_request=True)
     with get_db_cursor() as c:
         c.execute("""
             INSERT INTO invite_links (code, referrer_id, invite_link, link_name)
@@ -202,7 +248,7 @@ async def get_or_create_invite_link(bot, code, referrer_id):
 
 
 async def run_gate_and_deliver(bot, code, content, user_id, chat_id, edit_func=None, reply_func=None):
-    required_chats = [x for x in content["required_chats"].split(",") if x]
+    required_chats = [x for x in content["required_chats"].split(",") if x] if content["required_chats"] else []
     missing, config_errors = await resolve_missing(bot, required_chats, user_id)
 
     if config_errors:
@@ -271,11 +317,6 @@ async def handle_content_flow(bot, code, user_id, chat_id, edit_func=None, reply
     if reaction_chat:
         latest_msg_id = get_latest_post(reaction_chat)
         if latest_msg_id is None:
-            try:
-                chat_obj = await bot.get_chat(reaction_chat)
-                latest_link = f"https://t.me/{chat_obj.username}" if chat_obj.username else reaction_chat
-            except Exception:
-                latest_link = reaction_chat
             text = f"هنوز پستی از {reaction_chat} ثبت نشده. بعداً دوباره امتحان کن."
             if edit_func:
                 await edit_func(text)
@@ -338,7 +379,10 @@ async def recheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     async def edit_func(text, kb=None):
-        await query.edit_message_text(text, reply_markup=kb)
+        try:
+            await query.edit_message_text(text, reply_markup=kb)
+        except Exception:
+            pass
 
     await run_gate_and_deliver(context.bot, code, content, user_id, chat_id, edit_func=edit_func)
 
@@ -351,7 +395,10 @@ async def invcheck_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
 
     async def edit_func(text, kb=None):
-        await query.edit_message_text(text, reply_markup=kb)
+        try:
+            await query.edit_message_text(text, reply_markup=kb)
+        except Exception:
+            pass
 
     await handle_content_flow(context.bot, code, user_id, chat_id, edit_func=edit_func)
 
@@ -607,11 +654,46 @@ def api_contents():
         if not channel_ids:
             return jsonify({"success": False, "error": "حداقل یک کانال انتخاب کن"}), 400
 
-        uploaded = request.files.get("file")
+        uploaded_files = request.files.getlist("files")
+        valid_types = ("photo", "video", "animation", "audio", "sticker", "document")
+
+        if len(uploaded_files) >= 2:
+            items = []
+            for f in uploaded_files:
+                if not f.filename:
+                    continue
+                file_bytes = f.read()
+                content_type = type_override if type_override in valid_types else detect_content_type(f.filename, f.mimetype)
+                try:
+                    file_id = run_bot_coro(_upload_and_get_file_id(content_type, file_bytes, f.filename, ""), timeout=60)
+                except Exception as e:
+                    return jsonify({"success": False, "error": f"آپلود فایل '{f.filename}' شکست خورد: {e}"}), 500
+                items.append((content_type, file_id))
+
+            if not items:
+                return jsonify({"success": False, "error": "هیچ فایل معتبری دریافت نشد"}), 400
+
+            with get_db_cursor() as c:
+                c.execute("""
+                    INSERT INTO contents (code, title, content_type, text_content, file_id, required_chats, required_invites, required_reaction_chat)
+                    VALUES (%s, %s, 'album', %s, NULL, %s, %s, %s)
+                    ON CONFLICT (code) DO UPDATE SET title=%s, content_type='album', text_content=%s, file_id=NULL, required_chats=%s, required_invites=%s, required_reaction_chat=%s
+                """, (code, title, caption, ",".join(channel_ids), required_invites, required_reaction_chat,
+                      title, caption, ",".join(channel_ids), required_invites, required_reaction_chat))
+                c.execute("DELETE FROM content_items WHERE code = %s", (code,))
+                for i, (item_type, file_id) in enumerate(items):
+                    c.execute("""
+                        INSERT INTO content_items (code, position, item_type, file_id)
+                        VALUES (%s, %s, %s, %s)
+                    """, (code, i, item_type, file_id))
+
+            link = f"https://t.me/{BOT_USERNAME}?start={code}"
+            return jsonify({"success": True, "code": code, "link": link, "item_count": len(items)})
+
+        uploaded = uploaded_files[0] if uploaded_files else None
 
         if uploaded and uploaded.filename:
             file_bytes = uploaded.read()
-            valid_types = ("photo", "video", "animation", "audio", "sticker", "document")
             content_type = type_override if type_override in valid_types else detect_content_type(uploaded.filename, uploaded.mimetype)
             try:
                 file_id = run_bot_coro(_upload_and_get_file_id(content_type, file_bytes, uploaded.filename, caption), timeout=60)
@@ -626,6 +708,7 @@ def api_contents():
             text_content = text_body
 
         with get_db_cursor() as c:
+            c.execute("DELETE FROM content_items WHERE code = %s", (code,))
             c.execute("""
                 INSERT INTO contents (code, title, content_type, text_content, file_id, required_chats, required_invites, required_reaction_chat)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -648,6 +731,7 @@ def api_contents():
 @require_admin
 def api_content_delete(code):
     with get_db_cursor() as c:
+        c.execute("DELETE FROM content_items WHERE code = %s", (code,))
         c.execute("DELETE FROM contents WHERE code = %s", (code,))
     return jsonify({"success": True})
 
