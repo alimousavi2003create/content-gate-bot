@@ -11,7 +11,7 @@ from flask import Flask, request, jsonify, session, redirect, url_for, render_te
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
-    MessageReactionHandler, ChatMemberHandler, filters, ContextTypes,
+    MessageReactionHandler, ChatMemberHandler, ChatJoinRequestHandler, filters, ContextTypes,
 )
 
 from database import init_db, get_db_cursor
@@ -297,6 +297,38 @@ async def track_group_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 
+async def track_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    jr = update.chat_join_request
+    if not jr:
+        return
+    if INVITE_TARGET_CHAT_RESOLVED_ID is not None and jr.chat.id != INVITE_TARGET_CHAT_RESOLVED_ID:
+        return
+
+    invite_link = jr.invite_link
+    code, referrer_id = None, None
+    if invite_link and invite_link.name and ":" in invite_link.name:
+        code, referrer_id = invite_link.name.split(":", 1)
+
+    try:
+        await context.bot.approve_chat_join_request(chat_id=jr.chat.id, user_id=jr.from_user.id)
+    except Exception as e:
+        logger.error(f"could not approve join request for {jr.from_user.id}: {e}")
+        return
+
+    if not code or not referrer_id:
+        return
+    referred_id = jr.from_user.id
+    if str(referred_id) == str(referrer_id):
+        return
+
+    await record_invite_if_any(code, referrer_id, referred_id)
+    try:
+        new_count = get_invite_count(code, referrer_id)
+        await context.bot.send_message(chat_id=int(referrer_id), text=f"یک نفر با لینک دعوتت وارد گروه شد. پیشرفت: {new_count}")
+    except Exception:
+        pass
+
+
 async def track_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reaction = update.message_reaction
     if not reaction or not reaction.new_reaction:
@@ -545,6 +577,7 @@ async def _run_bot_async():
     application.add_handler(CallbackQueryHandler(invcheck_callback, pattern="^invcheck:"))
     application.add_handler(MessageReactionHandler(track_reaction))
     application.add_handler(ChatMemberHandler(track_group_join, ChatMemberHandler.CHAT_MEMBER))
+    application.add_handler(ChatJoinRequestHandler(track_join_request))
     application.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, group_gate))
     bot_app = application
 
@@ -562,7 +595,7 @@ async def _run_bot_async():
     await application.start()
     await application.updater.start_polling(
         drop_pending_updates=True,
-        allowed_updates=["message", "callback_query", "message_reaction", "chat_member"],
+        allowed_updates=["message", "callback_query", "message_reaction", "chat_member", "chat_join_request"],
     )
 
     bot_loop = asyncio.get_running_loop()
