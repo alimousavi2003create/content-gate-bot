@@ -60,6 +60,7 @@ a{color:#60a5fa}
 <input id="c-file" type="file" multiple>
 <textarea id="c-text" placeholder="متن (اگه فایل نمی‌فرستی، یا کپشن فایل)" rows="3"></textarea>
 <input id="c-invites" type="number" min="0" value="0" placeholder="تعداد دعوت لازم (۰ یعنی نیازی نیست)">
+<input id="c-reaction-chat" placeholder="@یوزرنیم کانال برای ریکشن اجباری (خالی=نیازی نیست)">
 <div class="checkbox-list" id="c-channels"></div>
 <button onclick="createContent()">ساخت لینک</button>
 <p id="c-msg" class="msg"></p>
@@ -124,6 +125,7 @@ async function submitOneContent(title, typeOverride, caption, invites, channelId
   fd.append('caption', caption);
   fd.append('text_body', caption);
   fd.append('required_invites', invites);
+  fd.append('required_reaction_chat', document.getElementById('c-reaction-chat').value.trim());
   channelIds.forEach(id => fd.append('channel_ids', id));
   if(file) fd.append('file', file);
   const r = await fetch('/admin/api/contents',{method:'POST',body:fd});

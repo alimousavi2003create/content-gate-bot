@@ -602,6 +602,7 @@ def api_contents():
             required_invites = int(request.form.get("required_invites") or 0)
         except ValueError:
             required_invites = 0
+        required_reaction_chat = (request.form.get("required_reaction_chat") or "").strip() or None
 
         if not channel_ids:
             return jsonify({"success": False, "error": "حداقل یک کانال انتخاب کن"}), 400
@@ -626,11 +627,11 @@ def api_contents():
 
         with get_db_cursor() as c:
             c.execute("""
-                INSERT INTO contents (code, title, content_type, text_content, file_id, required_chats, required_invites)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (code) DO UPDATE SET title=%s, content_type=%s, text_content=%s, file_id=%s, required_chats=%s, required_invites=%s
-            """, (code, title, content_type, text_content, file_id, ",".join(channel_ids), required_invites,
-                  title, content_type, text_content, file_id, ",".join(channel_ids), required_invites))
+                INSERT INTO contents (code, title, content_type, text_content, file_id, required_chats, required_invites, required_reaction_chat)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (code) DO UPDATE SET title=%s, content_type=%s, text_content=%s, file_id=%s, required_chats=%s, required_invites=%s, required_reaction_chat=%s
+            """, (code, title, content_type, text_content, file_id, ",".join(channel_ids), required_invites, required_reaction_chat,
+                  title, content_type, text_content, file_id, ",".join(channel_ids), required_invites, required_reaction_chat))
 
         link = f"https://t.me/{BOT_USERNAME}?start={code}"
         return jsonify({"success": True, "code": code, "link": link})
