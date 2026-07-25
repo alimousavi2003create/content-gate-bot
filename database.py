@@ -34,12 +34,20 @@ def init_db():
         """)
         c.execute("ALTER TABLE contents ADD COLUMN IF NOT EXISTS title TEXT")
         c.execute("ALTER TABLE contents ADD COLUMN IF NOT EXISTS required_invites INTEGER DEFAULT 0")
+        c.execute("ALTER TABLE contents ADD COLUMN IF NOT EXISTS required_reaction_chat TEXT")
         c.execute("""
             CREATE TABLE IF NOT EXISTS reactions (
                 chat_id TEXT NOT NULL,
                 message_id BIGINT NOT NULL,
                 user_id TEXT NOT NULL,
                 PRIMARY KEY (chat_id, message_id, user_id)
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS last_posts (
+                chat_id TEXT PRIMARY KEY,
+                message_id BIGINT NOT NULL,
+                updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
         c.execute("""

@@ -95,26 +95,76 @@ async def resolve_missing(bot, required_chats, user_id):
     return missing, config_errors
 
 
+AUTO_DELETE_SECONDS = int(os.environ.get("AUTO_DELETE_SECONDS", "30"))
+
+
+async def _delete_after_delay(bot, chat_id, message_id, delay):
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
 async def deliver_content(bot, chat_id, content):
     ctype = content["content_type"]
     caption = content["text_content"] or ""
+    sent_msg = None
     try:
         if ctype == "text":
-            await bot.send_message(chat_id=chat_id, text=content["text_content"] or "", protect_content=True)
+            sent_msg = await bot.send_message(chat_id=chat_id, text=content["text_content"] or "")
         elif ctype == "photo":
-            await bot.send_photo(chat_id=chat_id, photo=content["file_id"], caption=caption, protect_content=True)
+            sent_msg = await bot.send_photo(chat_id=chat_id, photo=content["file_id"], caption=caption)
         elif ctype == "video":
-            await bot.send_video(chat_id=chat_id, video=content["file_id"], caption=caption, protect_content=True)
+            sent_msg = await bot.send_video(chat_id=chat_id, video=content["file_id"], caption=caption)
         elif ctype == "animation":
-            await bot.send_animation(chat_id=chat_id, animation=content["file_id"], caption=caption, protect_content=True)
+            sent_msg = await bot.send_animation(chat_id=chat_id, animation=content["file_id"], caption=caption)
         elif ctype == "audio":
-            await bot.send_audio(chat_id=chat_id, audio=content["file_id"], caption=caption, protect_content=True)
+            sent_msg = await bot.send_audio(chat_id=chat_id, audio=content["file_id"], caption=caption)
         elif ctype == "sticker":
-            await bot.send_sticker(chat_id=chat_id, sticker=content["file_id"], protect_content=True)
+            sent_msg = await bot.send_sticker(chat_id=chat_id, sticker=content["file_id"])
         elif ctype == "document":
-            await bot.send_document(chat_id=chat_id, document=content["file_id"], caption=caption, protect_content=True)
+            sent_msg = await bot.send_document(chat_id=chat_id, document=content["file_id"], caption=caption)
     except Exception as e:
         logger.error(f"delivery failed: {e}")
+        return
+
+    if sent_msg is not None:
+        try:
+            notice = await bot.send_message(chat_id=chat_id, text=f"\u23F1 این پیام تا {AUTO_DELETE_SECONDS} ثانیه دیگه خودکار پاک میشه.")
+        except Exception:
+            notice = None
+        asyncio.create_task(_delete_after_delay(bot, chat_id, sent_msg.message_id, AUTO_DELETE_SECONDS))
+        if notice is not None:
+            asyncio.create_task(_delete_after_delay(bot, chat_id, notice.message_id, AUTO_DELETE_SECONDS))
+
+
+def get_latest_post(chat_id):
+    with get_db_cursor() as c:
+        c.execute("SELECT message_id FROM last_posts WHERE chat_id = %s", (str(chat_id),))
+        row = c.fetchone()
+    return row["message_id"] if row else None
+
+
+def has_reacted(chat_id, message_id, user_id):
+    with get_db_cursor() as c:
+        c.execute(
+            "SELECT 1 FROM reactions WHERE chat_id = %s AND message_id = %s AND user_id = %s",
+            (str(chat_id), message_id, str(user_id)),
+        )
+        return c.fetchone() is not None
+
+
+async def track_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    post = update.channel_post
+    if not post:
+        return
+    with get_db_cursor() as c:
+        c.execute("""
+            INSERT INTO last_posts (chat_id, message_id, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (chat_id) DO UPDATE SET message_id = %s, updated_at = NOW()
+        """, (str(post.chat_id), post.message_id, post.message_id))
 
 
 def get_invite_count(code, referrer_id):
@@ -211,6 +261,38 @@ async def handle_content_flow(bot, code, user_id, chat_id, edit_func=None, reply
             text = (f"برای دریافت این محتوا باید {required_invites} نفر رو با لینک زیر وارد گروه کنی.\n"
                      f"تا الان: {count} از {required_invites}\n\n{invite_link}")
             kb = build_invite_keyboard(code, invite_link)
+            if edit_func:
+                await edit_func(text, kb)
+            elif reply_func:
+                await reply_func(text, kb)
+            return
+
+    reaction_chat = content.get("required_reaction_chat")
+    if reaction_chat:
+        latest_msg_id = get_latest_post(reaction_chat)
+        if latest_msg_id is None:
+            try:
+                chat_obj = await bot.get_chat(reaction_chat)
+                latest_link = f"https://t.me/{chat_obj.username}" if chat_obj.username else reaction_chat
+            except Exception:
+                latest_link = reaction_chat
+            text = f"هنوز پستی از {reaction_chat} ثبت نشده. بعداً دوباره امتحان کن."
+            if edit_func:
+                await edit_func(text)
+            elif reply_func:
+                await reply_func(text)
+            return
+        elif not has_reacted(reaction_chat, latest_msg_id, user_id):
+            try:
+                chat_obj = await bot.get_chat(reaction_chat)
+                latest_link = f"https://t.me/{chat_obj.username}/{latest_msg_id}" if chat_obj.username else reaction_chat
+            except Exception:
+                latest_link = reaction_chat
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("\U0001F517 رفتن به آخرین پست", url=latest_link)],
+                [InlineKeyboardButton("\u2705 ریکشن زدم، چک کن", callback_data=f"invcheck:{code}")],
+            ])
+            text = f"اول باید رو آخرین پست کانال {reaction_chat} ریکشن بزنی."
             if edit_func:
                 await edit_func(text, kb)
             elif reply_func:
@@ -580,6 +662,7 @@ async def _run_bot_async():
     application.add_handler(MessageReactionHandler(track_reaction))
     application.add_handler(ChatMemberHandler(track_group_join, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(ChatJoinRequestHandler(track_join_request))
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, track_channel_post))
     application.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, group_gate))
     bot_app = application
 
@@ -597,7 +680,7 @@ async def _run_bot_async():
     await application.start()
     await application.updater.start_polling(
         drop_pending_updates=True,
-        allowed_updates=["message", "callback_query", "message_reaction", "chat_member", "chat_join_request"],
+        allowed_updates=["message", "callback_query", "message_reaction", "chat_member", "chat_join_request", "channel_post"],
     )
 
     bot_loop = asyncio.get_running_loop()
