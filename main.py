@@ -5,6 +5,7 @@ import asyncio
 import logging
 import threading
 import functools
+from urllib.parse import quote as urlquote
 
 from flask import Flask, request, jsonify, session, redirect, url_for, render_template
 
@@ -67,8 +68,9 @@ def build_join_keyboard(missing, code):
 
 
 def build_invite_keyboard(code, group_link):
+    encoded_link = urlquote(group_link, safe="")
     buttons = [
-        [InlineKeyboardButton("\U0001F4E4 اشتراک‌گذاری لینک گروه", url=f"https://t.me/share/url?url={group_link}")],
+        [InlineKeyboardButton("\U0001F4E4 اشتراک‌گذاری لینک گروه", url=f"https://t.me/share/url?url={encoded_link}")],
         [InlineKeyboardButton("\U0001F504 بررسی وضعیت", callback_data=f"invcheck:{code}")],
     ]
     return InlineKeyboardMarkup(buttons)
