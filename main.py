@@ -191,8 +191,12 @@ def get_invite_count(code, referrer_id):
         return c.fetchone()["cnt"]
 
 
+def _normalize_username(chat_ref):
+    return str(chat_ref).strip().strip("@").strip()
+
+
 def get_latest_post(chat_ref):
-    ref = str(chat_ref).lstrip("@")
+    ref = _normalize_username(chat_ref)
     with get_db_cursor() as c:
         c.execute(
             "SELECT message_id FROM last_posts WHERE chat_id = %s OR username = %s",
@@ -203,7 +207,7 @@ def get_latest_post(chat_ref):
 
 
 def _resolve_chat_id_for_reactions(chat_ref):
-    ref = str(chat_ref).lstrip("@")
+    ref = _normalize_username(chat_ref)
     with get_db_cursor() as c:
         c.execute("SELECT chat_id FROM last_posts WHERE chat_id = %s OR username = %s", (str(chat_ref), ref))
         row = c.fetchone()
