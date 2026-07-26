@@ -333,7 +333,7 @@ async def handle_content_flow(bot, code, user_id, chat_id, edit_func=None, reply
                 await reply_func(text, kb)
             return
 
-    reaction_chat = content.get("required_reaction_chat")
+    reaction_chat = None  # reaction gate disabled per request
     if reaction_chat:
         logger.info(f"checking reaction gate for required_reaction_chat={reaction_chat!r}")
         latest_msg_id = get_latest_post(reaction_chat)
