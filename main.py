@@ -211,12 +211,14 @@ async def track_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE)
     post = update.channel_post
     if not post:
         return
+    logger.info(f"channel_post received: chat_id={post.chat_id} username={post.chat.username} message_id={post.message_id}")
     with get_db_cursor() as c:
         c.execute("""
             INSERT INTO last_posts (chat_id, message_id, updated_at)
             VALUES (%s, %s, NOW())
             ON CONFLICT (chat_id) DO UPDATE SET message_id = %s, updated_at = NOW()
         """, (str(post.chat_id), post.message_id, post.message_id))
+    logger.info(f"last_posts updated for chat_id={post.chat_id}")
 
 
 async def record_invite_if_any(code, referrer_id, referred_id):
@@ -315,7 +317,9 @@ async def handle_content_flow(bot, code, user_id, chat_id, edit_func=None, reply
 
     reaction_chat = content.get("required_reaction_chat")
     if reaction_chat:
+        logger.info(f"checking reaction gate for required_reaction_chat={reaction_chat!r}")
         latest_msg_id = get_latest_post(reaction_chat)
+        logger.info(f"get_latest_post({reaction_chat!r}) returned {latest_msg_id!r}")
         if latest_msg_id is None:
             text = f"هنوز پستی از {reaction_chat} ثبت نشده. بعداً دوباره امتحان کن."
             if edit_func:
