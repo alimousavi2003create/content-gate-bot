@@ -55,10 +55,12 @@ def init_db():
         c.execute("""
             CREATE TABLE IF NOT EXISTS last_posts (
                 chat_id TEXT PRIMARY KEY,
+                username TEXT,
                 message_id BIGINT NOT NULL,
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        c.execute("ALTER TABLE last_posts ADD COLUMN IF NOT EXISTS username TEXT")
         c.execute("""
             CREATE TABLE IF NOT EXISTS channel_pool (
                 chat_id TEXT PRIMARY KEY,

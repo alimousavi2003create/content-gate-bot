@@ -191,18 +191,31 @@ def get_invite_count(code, referrer_id):
         return c.fetchone()["cnt"]
 
 
-def get_latest_post(chat_id):
+def get_latest_post(chat_ref):
+    ref = str(chat_ref).lstrip("@")
     with get_db_cursor() as c:
-        c.execute("SELECT message_id FROM last_posts WHERE chat_id = %s", (str(chat_id),))
+        c.execute(
+            "SELECT message_id FROM last_posts WHERE chat_id = %s OR username = %s",
+            (str(chat_ref), ref),
+        )
         row = c.fetchone()
     return row["message_id"] if row else None
 
 
-def has_reacted(chat_id, message_id, user_id):
+def _resolve_chat_id_for_reactions(chat_ref):
+    ref = str(chat_ref).lstrip("@")
+    with get_db_cursor() as c:
+        c.execute("SELECT chat_id FROM last_posts WHERE chat_id = %s OR username = %s", (str(chat_ref), ref))
+        row = c.fetchone()
+    return row["chat_id"] if row else str(chat_ref)
+
+
+def has_reacted(chat_ref, message_id, user_id):
+    resolved_chat_id = _resolve_chat_id_for_reactions(chat_ref)
     with get_db_cursor() as c:
         c.execute(
             "SELECT 1 FROM reactions WHERE chat_id = %s AND message_id = %s AND user_id = %s",
-            (str(chat_id), message_id, str(user_id)),
+            (resolved_chat_id, message_id, str(user_id)),
         )
         return c.fetchone() is not None
 
@@ -211,14 +224,15 @@ async def track_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE)
     post = update.channel_post
     if not post:
         return
-    logger.info(f"channel_post received: chat_id={post.chat_id} username={post.chat.username} message_id={post.message_id}")
+    username = post.chat.username
+    logger.info(f"channel_post received: chat_id={post.chat_id} username={username} message_id={post.message_id}")
     with get_db_cursor() as c:
         c.execute("""
-            INSERT INTO last_posts (chat_id, message_id, updated_at)
-            VALUES (%s, %s, NOW())
-            ON CONFLICT (chat_id) DO UPDATE SET message_id = %s, updated_at = NOW()
-        """, (str(post.chat_id), post.message_id, post.message_id))
-    logger.info(f"last_posts updated for chat_id={post.chat_id}")
+            INSERT INTO last_posts (chat_id, username, message_id, updated_at)
+            VALUES (%s, %s, %s, NOW())
+            ON CONFLICT (chat_id) DO UPDATE SET username = %s, message_id = %s, updated_at = NOW()
+        """, (str(post.chat_id), username, post.message_id, username, post.message_id))
+    logger.info(f"last_posts updated for chat_id={post.chat_id} username={username}")
 
 
 async def record_invite_if_any(code, referrer_id, referred_id):
