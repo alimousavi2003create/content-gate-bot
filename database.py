@@ -35,6 +35,7 @@ def init_db():
         c.execute("ALTER TABLE contents ADD COLUMN IF NOT EXISTS title TEXT")
         c.execute("ALTER TABLE contents ADD COLUMN IF NOT EXISTS required_invites INTEGER DEFAULT 0")
         c.execute("ALTER TABLE contents ADD COLUMN IF NOT EXISTS required_reaction_chat TEXT")
+        c.execute("ALTER TABLE contents ADD COLUMN IF NOT EXISTS footer_buttons TEXT")
         c.execute("""
             CREATE TABLE IF NOT EXISTS content_items (
                 code TEXT NOT NULL,

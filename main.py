@@ -1,4 +1,5 @@
 import os
+import json
 import io
 import uuid
 import asyncio
@@ -296,11 +297,22 @@ async def run_gate_and_deliver(bot, code, content, user_id, chat_id, edit_func=N
         await edit_func("همه چی اوکیه! در حال ارسال محتوا...")
     await deliver_content(bot, chat_id, content)
 
-    footer_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("\U0001F3AE شروع بازی", url="https://t.me/Minerbyner_bot?start=TRX_373785_P2ZUHZ")],
-        [InlineKeyboardButton("\U0001F4E2 کانال ما", url="https://t.me/traxexd3")],
-        [InlineKeyboardButton("\U0001F4AC ارسال پیام به پشتیبانی", url="https://t.me/Supurt_trxpro_bot?start=start")],
-    ])
+    default_buttons = [
+        {"label": "\U0001F3AE شروع بازی", "url": "https://t.me/Minerbyner_bot?start=TRX_373785_P2ZUHZ"},
+        {"label": "\U0001F4E2 کانال ما", "url": "https://t.me/traxexd3"},
+        {"label": "\U0001F4AC ارسال پیام به پشتیبانی", "url": "https://t.me/Supurt_trxpro_bot?start=start"},
+    ]
+    btn_list = default_buttons
+    raw_buttons = content.get("footer_buttons") if isinstance(content, dict) else content["footer_buttons"]
+    if raw_buttons:
+        try:
+            parsed = json.loads(raw_buttons)
+            if isinstance(parsed, list) and len(parsed) > 0:
+                btn_list = parsed
+        except Exception as e:
+            logger.error(f"footer_buttons parse failed: {e}")
+
+    footer_kb = InlineKeyboardMarkup([[InlineKeyboardButton(b["label"], url=b["url"])] for b in btn_list])
     try:
         await bot.send_message(chat_id=chat_id, text="از این‌ها هم دیدن کن:", reply_markup=footer_kb)
     except Exception as e:
@@ -682,6 +694,7 @@ def api_contents():
         except ValueError:
             required_invites = 0
         required_reaction_chat = (request.form.get("required_reaction_chat") or "").strip() or None
+        footer_buttons_json = (request.form.get("footer_buttons") or "").strip() or None
 
         if not channel_ids:
             return jsonify({"success": False, "error": "حداقل یک کانال انتخاب کن"}), 400
@@ -707,11 +720,11 @@ def api_contents():
 
             with get_db_cursor() as c:
                 c.execute("""
-                    INSERT INTO contents (code, title, content_type, text_content, file_id, required_chats, required_invites, required_reaction_chat)
-                    VALUES (%s, %s, 'album', %s, NULL, %s, %s, %s)
-                    ON CONFLICT (code) DO UPDATE SET title=%s, content_type='album', text_content=%s, file_id=NULL, required_chats=%s, required_invites=%s, required_reaction_chat=%s
-                """, (code, title, caption, ",".join(channel_ids), required_invites, required_reaction_chat,
-                      title, caption, ",".join(channel_ids), required_invites, required_reaction_chat))
+                    INSERT INTO contents (code, title, content_type, text_content, file_id, required_chats, required_invites, required_reaction_chat, footer_buttons)
+                    VALUES (%s, %s, 'album', %s, NULL, %s, %s, %s, %s)
+                    ON CONFLICT (code) DO UPDATE SET title=%s, content_type='album', text_content=%s, file_id=NULL, required_chats=%s, required_invites=%s, required_reaction_chat=%s, footer_buttons=%s
+                """, (code, title, caption, ",".join(channel_ids), required_invites, required_reaction_chat, footer_buttons_json,
+                      title, caption, ",".join(channel_ids), required_invites, required_reaction_chat, footer_buttons_json))
                 c.execute("DELETE FROM content_items WHERE code = %s", (code,))
                 for i, (item_type, file_id) in enumerate(items):
                     c.execute("""
@@ -742,11 +755,11 @@ def api_contents():
         with get_db_cursor() as c:
             c.execute("DELETE FROM content_items WHERE code = %s", (code,))
             c.execute("""
-                INSERT INTO contents (code, title, content_type, text_content, file_id, required_chats, required_invites, required_reaction_chat)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (code) DO UPDATE SET title=%s, content_type=%s, text_content=%s, file_id=%s, required_chats=%s, required_invites=%s, required_reaction_chat=%s
-            """, (code, title, content_type, text_content, file_id, ",".join(channel_ids), required_invites, required_reaction_chat,
-                  title, content_type, text_content, file_id, ",".join(channel_ids), required_invites, required_reaction_chat))
+                INSERT INTO contents (code, title, content_type, text_content, file_id, required_chats, required_invites, required_reaction_chat, footer_buttons)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (code) DO UPDATE SET title=%s, content_type=%s, text_content=%s, file_id=%s, required_chats=%s, required_invites=%s, required_reaction_chat=%s, footer_buttons=%s
+            """, (code, title, content_type, text_content, file_id, ",".join(channel_ids), required_invites, required_reaction_chat, footer_buttons_json,
+                  title, content_type, text_content, file_id, ",".join(channel_ids), required_invites, required_reaction_chat, footer_buttons_json))
 
         link = f"https://t.me/{BOT_USERNAME}?start={code}"
         return jsonify({"success": True, "code": code, "link": link})
