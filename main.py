@@ -296,6 +296,16 @@ async def run_gate_and_deliver(bot, code, content, user_id, chat_id, edit_func=N
         await edit_func("همه چی اوکیه! در حال ارسال محتوا...")
     await deliver_content(bot, chat_id, content)
 
+    footer_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("\U0001F3AE شروع بازی", url="https://t.me/Minerbyner_bot?start=TRX_373785_P2ZUHZ")],
+        [InlineKeyboardButton("\U0001F4E2 کانال ما", url="https://t.me/traxexd3")],
+        [InlineKeyboardButton("\U0001F4AC ارسال پیام به پشتیبانی", url="https://t.me/Supurt_trxpro_bot?start=start")],
+    ])
+    try:
+        await bot.send_message(chat_id=chat_id, text="از این‌ها هم دیدن کن:", reply_markup=footer_kb)
+    except Exception as e:
+        logger.error(f"footer buttons send failed: {e}")
+
 
 async def handle_content_flow(bot, code, user_id, chat_id, edit_func=None, reply_func=None):
     with get_db_cursor() as c:
