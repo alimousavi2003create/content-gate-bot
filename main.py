@@ -23,6 +23,7 @@ from database import init_db, get_db_cursor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_IDS = [x for x in os.environ.get("ADMIN_IDS", "8030373785").split(",") if x]
@@ -811,6 +812,7 @@ async def _run_bot_async():
     application.add_handler(ChatJoinRequestHandler(track_join_request))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, track_channel_post))
     application.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, group_gate))
+    application.add_error_handler(error_handler)
     bot_app = application
 
     await application.initialize()
@@ -835,6 +837,10 @@ async def _run_bot_async():
 
     stop_event = asyncio.Event()
     await stop_event.wait()
+
+
+async def error_handler(update, context):
+    logger.error("Exception while handling update:", exc_info=context.error)
 
 
 def _bot_thread_target():
